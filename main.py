@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Whisper Kabyle Audio Transcription WebSocket Backend with SSL Support
-Real-time audio transcription server using WebSockets with WSS support
+Whisper Kabyle Audio Transcription WebSocket Backend
+Real-time audio transcription server using WebSockets
 """
 import asyncio
 import websockets
@@ -11,7 +11,6 @@ import tempfile
 import os
 import sys
 import uuid
-import ssl
 from datetime import datetime
 from pathlib import Path
 import torch
@@ -98,7 +97,7 @@ class UploadSession:
                 logger.warning(f"Failed to clean up temporary file {self.temp_file_path}: {e}")
 
 class WhisperWebSocketServer:
-    def __init__(self, checkpoint_path="./checkpoint", host="0.0.0.0", port=16391, ssl_cert=None, ssl_key=None):
+    def __init__(self, checkpoint_path="./checkpoint", host="0.0.0.0", port=16391):
         """
         Initialize the Whisper WebSocket server
         
@@ -106,14 +105,10 @@ class WhisperWebSocketServer:
             checkpoint_path (str): Path to the checkpoint directory
             host (str): Server host
             port (int): Server port
-            ssl_cert (str): Path to SSL certificate file
-            ssl_key (str): Path to SSL private key file
         """
         self.checkpoint_path = checkpoint_path
         self.host = host
         self.port = port
-        self.ssl_cert = ssl_cert
-        self.ssl_key = ssl_key
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model = None
         self.processor = None
@@ -121,7 +116,6 @@ class WhisperWebSocketServer:
         self.upload_sessions: Dict[str, UploadSession] = {}  # Track active upload sessions
         
         logger.info(f"Initializing server on {host}:{port}")
-        logger.info(f"SSL enabled: {bool(ssl_cert and ssl_key)}")
         logger.info(f"Using device: {self.device}")
         
         # Check for ffmpeg availability for MP3 support
@@ -166,24 +160,6 @@ class WhisperWebSocketServer:
                         
             except Exception as e:
                 logger.error(f"Error in upload cleanup task: {e}")
-    
-    def create_ssl_context(self):
-        """Create SSL context for WSS"""
-        if not (self.ssl_cert and self.ssl_key):
-            return None
-            
-        try:
-            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            ssl_context.load_cert_chain(self.ssl_cert, self.ssl_key)
-            
-            ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
-            ssl_context.set_ciphers('ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!MD5:!DSS')
-            
-            logger.info("SSL context created successfully")
-            return ssl_context
-        except Exception as e:
-            logger.error(f"Failed to create SSL context: {e}")
-            return None
     
     def load_model(self):
         """Load the fine-tuned Whisper model and processor"""
@@ -786,28 +762,18 @@ class WhisperWebSocketServer:
         # Start the upload cleanup task now that we have an event loop
         asyncio.create_task(self.cleanup_old_uploads())
         
-        ssl_context = self.create_ssl_context()
-        protocol = "wss" if ssl_context else "ws"
+        logger.info(f"Starting WebSocket server (ws) on {self.host}:{self.port}")
         
-        logger.info(f"Starting WebSocket server ({protocol}) on {self.host}:{self.port}")
-        
-        async with websockets.serve(
-            self.handle_client, 
-            self.host, 
-            self.port,
-            ssl=ssl_context
-        ):
-            logger.info(f"WebSocket server started successfully on {protocol}://{self.host}:{self.port}")
+        async with websockets.serve(self.handle_client, self.host, self.port):
+            logger.info(f"WebSocket server started successfully on ws://{self.host}:{self.port}")
             logger.info("Waiting for connections...")
             await asyncio.Future()  # Run forever
 
 def main():
-    parser = argparse.ArgumentParser(description="Whisper WebSocket Transcription Server with SSL Support and File Upload")
+    parser = argparse.ArgumentParser(description="Whisper WebSocket Transcription Server with File Upload")
     parser.add_argument("--checkpoint", default="./checkpoint", help="Path to model checkpoint directory")
     parser.add_argument("--host", default="0.0.0.0", help="Server host (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=16391, help="Server port (default: 16391)")
-    parser.add_argument("--ssl-cert", help="Path to SSL certificate file (.crt or .pem)")
-    parser.add_argument("--ssl-key", help="Path to SSL private key file (.key)")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"], help="Log level")
     
     args = parser.parse_args()
@@ -820,27 +786,7 @@ def main():
         logger.error(f"Checkpoint directory not found: {args.checkpoint}")
         sys.exit(1)
     
-    # Validate SSL certificates if provided
-    if args.ssl_cert or args.ssl_key:
-        if not (args.ssl_cert and args.ssl_key):
-            logger.error("Both --ssl-cert and --ssl-key must be provided for SSL support")
-            sys.exit(1)
-        
-        if not os.path.exists(args.ssl_cert):
-            logger.error(f"SSL certificate file not found: {args.ssl_cert}")
-            sys.exit(1)
-        
-        if not os.path.exists(args.ssl_key):
-            logger.error(f"SSL private key file not found: {args.ssl_key}")
-            sys.exit(1)
-    
-    server = WhisperWebSocketServer(
-        args.checkpoint, 
-        args.host, 
-        args.port, 
-        args.ssl_cert, 
-        args.ssl_key
-    )
+    server = WhisperWebSocketServer(args.checkpoint, args.host, args.port)
     
     try:
         asyncio.run(server.start_server())
